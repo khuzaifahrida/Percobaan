@@ -1,0 +1,154 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Login Admin – RIDA-AFAEK</title>
+<script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="min-h-screen bg-slate-100 text-slate-800 antialiased">
+
+<main class="min-h-screen flex items-center justify-center px-4 py-10">
+  <div class="w-full max-w-md">
+    <div class="bg-white rounded-2xl shadow-xl ring-1 ring-slate-200 p-8">
+
+      <div class="flex items-center gap-3 mb-7">
+        <div class="h-11 w-11 rounded-xl bg-blue-600 text-white grid place-items-center">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" aria-hidden="true">
+            <rect x="5" y="11" width="14" height="9" rx="2"/><path stroke-linecap="round" d="M8 11V8a4 4 0 0 1 8 0v3"/>
+          </svg>
+        </div>
+        <div>
+          <p class="font-semibold text-slate-900 leading-tight">RIDA-AFAEK</p>
+          <p class="text-sm text-slate-500 leading-tight">Panel admin Bapperida NTT</p>
+        </div>
+      </div>
+
+      <!-- Tampilan: belum login -->
+      <section id="view-login" aria-labelledby="login-title">
+        <h1 id="login-title" class="text-2xl font-bold text-slate-900">Login Admin</h1>
+        <p class="mt-1 mb-6 text-sm text-slate-500">Masuk dengan akun Google. Hanya dua akun admin yang terdaftar yang dapat mengakses dashboard.</p>
+
+        <div id="config-warning" class="hidden mb-4 rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-900 ring-1 ring-amber-200">
+          <b>Client ID Google belum diisi.</b> Buka berkas ini, ganti nilai <code class="rounded bg-amber-100 px-1">GOOGLE_CLIENT_ID</code> dengan OAuth Client ID dari Google Cloud Console, lalu muat ulang halaman.
+        </div>
+
+        <div id="google-btn" class="flex justify-center min-h-[44px]" aria-live="polite"></div>
+
+        <p id="login-error" role="alert" class="hidden mt-4 rounded-lg bg-red-50 px-3 py-2 text-sm text-red-700 ring-1 ring-red-200"></p>
+        <p class="mt-5 text-xs text-slate-500 text-center">Sesi berlaku selama masa token Google (sekitar satu jam) dan berakhir saat tab ditutup.</p>
+      </section>
+
+      <!-- Tampilan: sudah login -->
+      <section id="view-session" class="hidden" aria-labelledby="session-title">
+        <h1 id="session-title" class="text-2xl font-bold text-slate-900">Anda sudah masuk</h1>
+        <p class="mt-1 mb-6 text-sm text-slate-500">Masuk sebagai <b id="session-email" class="text-slate-800"></b>.</p>
+        <div class="space-y-3">
+          <button id="btn-dashboard" type="button" class="w-full rounded-lg bg-blue-600 px-4 py-2.5 font-semibold text-white shadow-sm hover:bg-blue-700 focus:outline-none focus:ring-4 focus:ring-blue-200">Buka dashboard</button>
+          <button id="btn-logout" type="button" class="w-full rounded-lg bg-white px-4 py-2.5 font-semibold text-blue-700 ring-1 ring-blue-200 hover:bg-blue-50 focus:outline-none focus:ring-4 focus:ring-blue-100">Keluar</button>
+        </div>
+      </section>
+
+    </div>
+    <p class="mt-5 text-center text-xs text-slate-500">© 2026 Bapperida Provinsi Nusa Tenggara Timur</p>
+  </div>
+</main>
+
+<script src="config.js"></script>
+<script>
+/* ===== Konfigurasi ===== */
+const GOOGLE_CLIENT_ID = (window.RIDA_CONFIG || {}).GOOGLE_CLIENT_ID || "ISI_CLIENT_ID_ANDA.apps.googleusercontent.com"; // diatur pada config.js
+const ALLOWED_EMAILS = ["bridabapperidanttprov@gmail.com", "iffahbapperida@gmail.com"];
+const DASHBOARD_URL = "index.html#admin";   // dasbor utama; mode admin aktif otomatis bila sesi sah
+const SESSION_KEY = "rida_admin_session";   // sessionStorage; dibaca oleh dashboard.html
+const VERIFY_URL = (window.RIDA_CONFIG || {}).VERIFY_URL || "";   // diatur pada config.js (URL Web App Apps Script)
+
+/* ===== Util ===== */
+const $ = (id) => document.getElementById(id);
+const normEmail = (e) => String(e || "").trim().toLowerCase();
+const isAllowedEmail = (e) => ALLOWED_EMAILS.includes(normEmail(e));
+const configured = /^[\w.-]+\.apps\.googleusercontent\.com$/.test(GOOGLE_CLIENT_ID) && !GOOGLE_CLIENT_ID.startsWith("ISI_");
+
+function showError(msg) { const el = $("login-error"); el.textContent = msg; el.classList.remove("hidden"); }
+function clearError() { const el = $("login-error"); el.textContent = ""; el.classList.add("hidden"); }
+
+function decodeJwt(token) {
+  const part = String(token).split(".")[1];
+  if (!part) throw new Error("token tidak valid");
+  const b64 = part.replace(/-/g, "+").replace(/_/g, "/").padEnd(Math.ceil(part.length / 4) * 4, "=");
+  const bytes = Uint8Array.from(atob(b64), (c) => c.charCodeAt(0));
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+function readSession() {
+  try {
+    const s = JSON.parse(sessionStorage.getItem(SESSION_KEY) || "null");
+    return s && s.exp > Date.now() && isAllowedEmail(s.email) ? s : null;
+  } catch (e) { return null; }
+}
+function goDashboard() { window.location.href = DASHBOARD_URL; }
+
+/* ===== Penanganan hasil login Google ===== */
+async function handleCredential(resp) {
+  clearError();
+  if (!configured) return showError("Client ID Google belum dikonfigurasi.");
+  let p;
+  try { p = decodeJwt(resp && resp.credential); } catch (e) { return showError("Respons Google tidak dapat dibaca. Coba login ulang."); }
+
+  const issOk = p.iss === "accounts.google.com" || p.iss === "https://accounts.google.com";
+  if (p.aud !== GOOGLE_CLIENT_ID || !issOk) return showError("Token Google tidak sesuai dengan aplikasi ini.");
+  if (!p.exp || p.exp * 1000 <= Date.now()) return showError("Token Google sudah kedaluwarsa. Coba login ulang.");
+  if (!(p.email_verified === true || p.email_verified === "true")) return showError("Email Google belum terverifikasi.");
+
+  if (!isAllowedEmail(p.email)) {
+    if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
+    return showError("Akun " + p.email + " tidak terdaftar sebagai admin. Gunakan salah satu akun admin yang diizinkan.");
+  }
+
+  if (VERIFY_URL) { // verifikasi tanda tangan token oleh Google melalui server Apps Script
+    try {
+      const r = await (await fetch(VERIFY_URL + (VERIFY_URL.includes("?") ? "&" : "?") + "act=verify&token=" + encodeURIComponent(resp.credential))).json();
+      if (!r.ok) return showError("Verifikasi server menolak akun ini.");
+    } catch (e) { return showError("Verifikasi server gagal. Periksa koneksi lalu coba lagi."); }
+  }
+
+  try {
+    sessionStorage.setItem(SESSION_KEY, JSON.stringify({ email: normEmail(p.email), name: p.name || "", exp: p.exp * 1000, token: resp.credential }));
+  } catch (e) { return showError("Sesi tidak dapat disimpan. Penyimpanan peramban dinonaktifkan."); }
+  alert("Login Berhasil");
+  goDashboard();
+}
+
+/* ===== Tampilan ===== */
+function renderSessionView() {
+  const s = readSession();
+  $("view-login").classList.toggle("hidden", !!s);
+  $("view-session").classList.toggle("hidden", !s);
+  if (s) $("session-email").textContent = s.email;
+  return !!s;
+}
+$("btn-dashboard").addEventListener("click", goDashboard);
+$("btn-logout").addEventListener("click", () => {
+  try { sessionStorage.removeItem(SESSION_KEY); } catch (e) {}
+  if (window.google && google.accounts && google.accounts.id) google.accounts.id.disableAutoSelect();
+  renderSessionView();
+});
+
+/* ===== Muat Google Identity Services ===== */
+function initGoogle() {
+  google.accounts.id.initialize({ client_id: GOOGLE_CLIENT_ID, callback: handleCredential, auto_select: false, cancel_on_tap_outside: true });
+  google.accounts.id.renderButton($("google-btn"), { type: "standard", theme: "filled_blue", size: "large", text: "signin_with", shape: "rectangular", logo_alignment: "left", width: 320 });
+}
+if (!renderSessionView()) {
+  if (!configured) {
+    $("config-warning").classList.remove("hidden");
+  } else {
+    const s = document.createElement("script");
+    s.src = "https://accounts.google.com/gsi/client"; s.async = true; s.defer = true;
+    s.onload = initGoogle;
+    s.onerror = () => showError("Layanan Google tidak dapat dimuat. Periksa koneksi internet atau pemblokir skrip.");
+    document.head.appendChild(s);
+  }
+}
+</script>
+</body>
+</html>
